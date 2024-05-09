@@ -1,7 +1,7 @@
-import { publishMessage } from "./utils.js";
+import { PubSub } from "./pubsub.js";
 const { nanoid } = await import('nanoid');
 
-type State = 'Awaiting Selection' | 'Display Price' | 'Await Money' | 'Vending' | 'Collect Item';
+export type State = 'Awaiting Selection' | 'Display Price' | 'Await Money' | 'Vending' | 'Collect Item';
 
 export interface Product {
     name: string;
@@ -19,8 +19,11 @@ interface StateMachineConfig {
 export class VendingMachine {
     private currentState: State;
     private transitions: StateMachineConfig = {
+        'Start':{
+            next:'Awaiting Selection'
+        },
         'Awaiting Selection': {
-            selectProduct: 'Display Price'
+            next: 'Display Price'
         },
         'Display Price': {
             insertMoney: 'Await Money',
@@ -32,110 +35,68 @@ export class VendingMachine {
             cancel: 'Awaiting Selection'
         },
         'Vending': {
-            itemVended: 'Collect Item'
+            next: 'Collect Item'
         },
         'Collect Item': {
-            itemCollected: 'Awaiting Selection'
+            next: 'Awaiting Selection'
         }
-    };;
+    };
     private selectedProduct?: Product;
     private insertedMoney: number = 0;
     private sessionId: string;
+    private pubSub: PubSub;
 
-    constructor(sessionId: string) {
-        this.currentState = 'Awaiting Selection';
+    constructor(sessionId: string, currentState:State) {
         this.sessionId = sessionId;
-    }
-    next(input: string): void {
-        const transition = this.transitions[this.currentState][input];
-        if (transition) {
-            this.currentState = transition;
-            publishMessage(this.sessionId, `State changed to ${this.currentState}`);
-            this.handleStateActions();
-        } else {
-            publishMessage(this.sessionId, `Invalid input or no transition available from state ${this.currentState} with input ${input}`);
-        }
-    }
-  private handleStateActions(): void {
-    // Handle actions based on the current state
-    switch (this.currentState) {
-      case "Display Price":
-        if (this.selectedProduct) {
-          publishMessage(
-            this.sessionId,
-            `Price is ${this.selectedProduct.price}. Please insert money.`
-          );
-        }
-        break;
-      case "Vending":
-        this.vendItem();
-        break;
-      case "Collect Item":
-        this.collectItem();
-        break;
-      case "Awaiting Selection":
-        publishMessage(this.sessionId, "Please select a product.");
-        break;
-      case "Await Money":
-        publishMessage(this.sessionId, "Please insert more money.");
-        break;
-    }
-  }
-
-    selectProduct(product: Product): void {
-        console.log("Selecting product", product);
-        if (this.currentState === 'Awaiting Selection') {
-            this.selectedProduct = product;
-            this.currentState = 'Display Price';
-            publishMessage(this.sessionId, `Selected: ${product.name}, Price: $${product.price}`);
-        } else {
-            publishMessage(this.sessionId, 'You cannot select a product at this stage.');
-        }
+        this.pubSub = new PubSub();
+        this.currentState = currentState;
+        this.handleStateChange();
     }
 
-    insertMoney(amount: number): void {
-        if (this.currentState === 'Display Price' || this.currentState === 'Await Money') {
-            this.insertedMoney += amount;
-            publishMessage(this.sessionId, `Inserted: $${amount}, Total: $${this.insertedMoney}`);
-            this.checkMoney();
-        } else {
-            publishMessage(this.sessionId, 'You cannot insert money at this stage.');
-        }
+    setState(newState: State) {
+        this.currentState = newState;
+        this.handleStateChange();
     }
 
-    private checkMoney(): void {
-        if (this.selectedProduct && this.insertedMoney >= this.selectedProduct.price) {
-            this.currentState = 'Vending';
-            publishMessage(this.sessionId, 'Processing item...');
-            this.vendItem();
-        } else {
-            this.currentState = 'Await Money';
-            publishMessage(this.sessionId, 'Additional money required.');
-        }
+    next(input: string) {
+        
+        input = input? input : "selectProduct"
+        console.log("input is: ", input)
+        return this.handleStateChange()
     }
 
-    private vendItem(): void {
-        if (this.selectedProduct) {
-            publishMessage(this.sessionId, `Vending ${this.selectedProduct.name}...`);
-            this.currentState = 'Collect Item';
+    handleStateChange() {
+        console.log("publishing data from vending machine to: ", this.sessionId, "with state ", this.currentState)
+        switch (this.currentState) {
+            case 'Awaiting Selection':
+                return {
+                    promptType: 'list',
+                    message: 'Select an action:',
+                    choices: ['Select Product', 'Insert Money', 'Collect Item', 'Cancel']
+                };
+            case 'Display Price':
+                return{
+                    promptType: 'input',
+                    message: 'Enter the amount of money:',
+                    validate: (input: string) => parseFloat(input) ? true : "Please enter a valid number."
+                }
+            case 'Await Money':
+                return {
+                    promptType: 'input',
+                    message: 'How much more money to insert?',
+                    validate: (input: string) => {
+                        const value = parseFloat(input);
+                        return (value > 0 && value <= 10) ? true : "Enter a valid amount between $0 and $10.";
+                    }
+                }
+            case 'Vending':
+                setTimeout(() => {
+                    this.setState('Collect Item');
+                }, 5000);  // Simulates a 5-second delay for vending
+                return{
+                    message: 'Thank you! Please collect your item.'
+                }
         }
-    }
-
-    collectItem(): void {
-        if (this.currentState === 'Collect Item') {
-            publishMessage(this.sessionId, `Please collect your item: ${this.selectedProduct?.name}`);
-            this.resetMachine();
-        } else {
-            publishMessage(this.sessionId, 'No item to collect.');
-        }
-    }
-
-    private resetMachine(): void {
-        this.currentState = 'Awaiting Selection';
-        this.selectedProduct = undefined;
-        this.insertedMoney = 0;
-        publishMessage(this.sessionId, 'Session ended. Goodbye!');
-        this.sessionId = nanoid()
     }
 
     getCurrentState(): State {
